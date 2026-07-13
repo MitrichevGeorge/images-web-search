@@ -1,0 +1,15 @@
+requests
+beautifulsoup4
+lxml
+html5lib
+duckduckgo-search
+ddgs
+bing-image-downloader
+icrawler
+Pillow
+imageio
+ExifRead
+opencv-python-headless
+python-magic
+aiohttp
+httpx

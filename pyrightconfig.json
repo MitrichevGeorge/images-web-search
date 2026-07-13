@@ -1,0 +1,8 @@
+{
+  "include": ["."],
+  "exclude": ["venv", "__pycache__", ".claude", "search_results", "test_results"],
+  "pythonVersion": "3.14",
+  "venv": "venv",
+  "venvPath": ".",
+  "typeCheckingMode": "basic"
+}
