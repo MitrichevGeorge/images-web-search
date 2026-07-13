@@ -1,22 +1,10 @@
-# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Virtual environments
 venv/
-.venv/
-env/
-.env/
-
-# IDE / editors
 .vscode/
-.idea/
-*.swp
-*.swo
-
-# Claude / project
 .claude/
 search_results/
 test_results/
