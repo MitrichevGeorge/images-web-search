@@ -2,42 +2,70 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+import logging
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, Final, Iterable, NamedTuple, Sequence
 
 from methods import METHODS
 from methods.base import BenchmarkRecord, MethodMeta
 
-
-DEFAULT_QUERIES: tuple[str, ...] = (
+DEFAULT_QUERIES: Final[tuple[str, ...]] = (
     "nature landscape",
     "cat portrait",
     "space galaxy",
     "architecture building",
 )
-DEFAULT_LIMIT: int = 5
-REPORT_PATH: Path = Path("benchmark_report.json")
+DEFAULT_LIMIT: Final[int] = 10
+REPORT_PATH: Final[Path] = Path("benchmark_report.json")
+
+logger = logging.getLogger("BenchmarkSuite")
+
+
+@dataclass(slots=True, frozen=True)
+class MethodStats:
+    meta: MethodMeta
+    queries_tested: int
+    success_rate: float
+    total_results: int
+    avg_time_ms: float
+    errors: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.meta.name,
+            "category": self.meta.category,
+            "queries_tested": self.queries_tested,
+            "success_rate": self.success_rate,
+            "total_results": self.total_results,
+            "avg_time_ms": self.avg_time_ms,
+            "errors": self.errors,
+        }
+
+
+class ReportRenderer(NamedTuple):
+    query_fmt: str = "{idx:<4} {name:<30} {category:<18} {success:<6} {count:<6} {time:>10.2f}"
+    summary_fmt: str = "{idx:<4} {name:<30} {category:<18} {success:<8} {time:<12} {count:<12}"
 
 
 def run_benchmarks(
-    methods: tuple[Any, ...],
-    queries: tuple[str, ...],
+    methods: Sequence[Any],
+    queries: Sequence[str],
     *,
     limit: int = DEFAULT_LIMIT,
 ) -> list[BenchmarkRecord]:
     records: list[BenchmarkRecord] = []
     total_runs = len(queries) * len(methods)
 
-    print(f"\n▶ Запуск {len(methods)} методов × {len(queries)} запросов "
-          f"= {total_runs} измерений (limit={limit})\n")
+    print(f"\n▶ Запуск {len(methods)} методов × {len(queries)} запросов = {total_runs} измерений (limit={limit})\n")
 
     for query_idx, query in enumerate(queries, start=1):
         print(f"[{query_idx}/{len(queries)}] Запрос: \"{query}\"")
         for method_idx, method in enumerate(methods, start=1):
             record = method.benchmark(query, limit=limit)
             records.append(record)
+            
             status = "✓" if record.success else "✗"
             print(
                 f"  {status} {method_idx:02d}. {record.meta.name:30s} "
@@ -49,90 +77,78 @@ def run_benchmarks(
     return records
 
 
-def _method_aggregate(
-    records: list[BenchmarkRecord],
-    meta: MethodMeta,
-) -> dict[str, Any]:
-    method_records = [r for r in records if r.meta == meta]
-    successes = sum(1 for r in method_records if r.success)
-    total_count = sum(r.results_count for r in method_records)
-    times = [r.duration_sec * 1000 for r in method_records if r.success]
-
-    return {
-        "name": meta.name,
-        "category": meta.category,
-        "queries_tested": len(method_records),
-        "success_rate": successes / len(method_records) if method_records else 0.0,
-        "total_results": total_count,
-        "avg_time_ms": mean(times) if times else float("inf"),
-        "errors": [
-            f"{r.query}: {r.error}"
-            for r in method_records
-            if not r.success and r.error
-        ],
-    }
-
-
-def build_ranking(records: list[BenchmarkRecord]) -> list[dict[str, Any]]:
+def calculate_rankings(records: Sequence[BenchmarkRecord]) -> list[MethodStats]:
     metas = {r.meta for r in records}
-    aggregates = [_method_aggregate(records, meta) for meta in metas]
+    rankings: list[MethodStats] = []
 
-    aggregates.sort(
-        key=lambda item: (
-            -item["success_rate"],
-            item["avg_time_ms"],
-            -item["total_results"],
+    for meta in metas:
+        method_records = [r for r in records if r.meta == meta]
+        if not method_records:
+            continue
+
+        successes = sum(1 for r in method_records if r.success)
+        times = [r.duration_sec * 1000 for r in method_records if r.success]
+        
+        rankings.append(
+            MethodStats(
+                meta=meta,
+                queries_tested=len(method_records),
+                success_rate=successes / len(method_records),
+                total_results=sum(r.results_count for r in method_records),
+                avg_time_ms=mean(times) if times else float("inf"),
+                errors=[f"{r.query}: {r.error}" for r in method_records if not r.success and r.error]
+            )
         )
+
+    rankings.sort(key=lambda item: (-item.success_rate, item.avg_time_ms, -item.total_results))
+    return rankings
+
+
+def print_query_table(records: Sequence[BenchmarkRecord], query: str) -> None:
+    query_records = sorted(
+        [r for r in records if r.query == query],
+        key=lambda r: (not r.success, r.duration_sec)
     )
-    return aggregates
 
+    header = f"{'#':<4} {'Метод':<30} {'Категория':<18} {'Успех':<6} {'Рез.':<6} {'Время, мс':<12}"
+    print(f"\n=== Запрос: \"{query}\" ===\n{header}\n{'-' * len(header)}")
 
-def print_query_table(records: list[BenchmarkRecord], query: str) -> None:
-    query_records = [r for r in records if r.query == query]
-    query_records.sort(key=lambda r: (not r.success, r.duration_sec))
-
-    header = (
-        f"{'#':<4} {'Метод':<30} {'Категория':<18} "
-        f"{'Успех':<6} {'Рез.':<6} {'Время, мс':<12}"
-    )
-    separator = "-" * len(header)
-
-    print(f"\n=== Запрос: \"{query}\" ===")
-    print(header)
-    print(separator)
-
-    for idx, record in enumerate(query_records, start=1):
-        success_mark = "Да" if record.success else "Нет"
+    renderer = ReportRenderer()
+    for idx, r in enumerate(query_records, start=1):
         print(
-            f"{idx:<4} {record.meta.name:<30} {record.meta.category:<18} "
-            f"{success_mark:<6} {record.results_count:<6} "
-            f"{record.duration_sec * 1000:>10.2f}"
+            renderer.query_fmt.format(
+                idx=idx,
+                name=r.meta.name,
+                category=r.meta.category,
+                success="Да" if r.success else "Нет",
+                count=r.results_count,
+                time=r.duration_sec * 1000
+            )
         )
 
 
-def print_summary(ranking: list[dict[str, Any]]) -> None:
-    header = (
-        f"{'#':<4} {'Метод':<30} {'Категория':<18} "
-        f"{'Успех %':<8} {'Среднее мс':<12} {'Всего рез.':<12}"
-    )
-    separator = "-" * len(header)
+def print_summary(ranking: Iterable[MethodStats]) -> None:
+    header = f"{'#':<4} {'Метод':<30} {'Категория':<18} {'Успех %':<8} {'Среднее мс':<12} {'Всего рез.':<12}"
+    border = "=" * len(header)
+    
+    print(f"\n{border}\nИТОГОВЫЙ РЕЙТИНГ МЕТОДОВ\n{border}\n{header}\n{'-' * len(header)}")
 
-    print("\n" + "=" * len(header))
-    print("ИТОГОВЫЙ РЕЙТИНГ МЕТОДОВ")
-    print("=" * len(header))
-    print(header)
-    print(separator)
-
+    renderer = ReportRenderer()
     for idx, item in enumerate(ranking, start=1):
-        success_pct = f"{item['success_rate'] * 100:.0f}%"
-        avg_ms = f"{item['avg_time_ms']:.2f}" if item["avg_time_ms"] != float("inf") else "N/A"
+        avg_ms = f"{item.avg_time_ms:.2f}" if item.avg_time_ms != float("inf") else "N/A"
         print(
-            f"{idx:<4} {item['name']:<30} {item['category']:<18} "
-            f"{success_pct:<8} {avg_ms:<12} {item['total_results']:<12}"
+            renderer.summary_fmt.format(
+                idx=idx,
+                name=item.meta.name,
+                category=item.meta.category,
+                success=f"{item.success_rate * 100:.0f}%",
+                time=avg_ms,
+                count=item.total_results
+            )
         )
 
 
-def save_report(records: list[BenchmarkRecord], path: Path = REPORT_PATH) -> None:
+def save_report(records: Sequence[BenchmarkRecord], path: Path = REPORT_PATH) -> None:
     payload = {
         "summary": {
             "methods_tested": len({r.meta for r in records}),
@@ -141,8 +157,15 @@ def save_report(records: list[BenchmarkRecord], path: Path = REPORT_PATH) -> Non
         },
         "records": [asdict(record) for record in records],
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\n📄 Отчёт сохранён: {path.resolve()}")
+    
+    try:
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), 
+            encoding="utf-8"
+        )
+        print(f"\nОтчёт сохранён: {path.resolve()}")
+    except IOError as e:
+        logger.error("Failed writing tracking metadata matrix: %s", e)
 
 
 def main() -> None:
@@ -151,7 +174,7 @@ def main() -> None:
     for query in DEFAULT_QUERIES:
         print_query_table(records, query)
 
-    ranking = build_ranking(records)
+    ranking = calculate_rankings(records)
     print_summary(ranking)
     save_report(records)
 
